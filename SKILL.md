@@ -74,6 +74,7 @@ Batch freely — 60 item-adds in one POST is fine and far faster than 60 round t
 | Delete list | shopping-lists | `remove-shopping-list` | `listId`, `list` |
 | Add item | shopping-lists | `add-shopping-list-item` | `listId`, `listItemId`, `listItem` |
 | Set item category | shopping-lists | `set-list-item-category` | `listId`, `listItemId`, `updatedValue` |
+| Set item category assignment | shopping-lists | `update-list-item-category-assignment` | `listId`, `listItemId`, `listItem` (carrying `categoryAssignments`) |
 | Attach category set | list-settings | `set-category-grouping-id` | `updatedSettings` |
 | Show categories | list-settings | `set-should-hide-categories` | `updatedSettings` |
 
@@ -86,14 +87,17 @@ An unrecognized `handlerId` returns `HTTP 200` and changes nothing. Status codes
 as a success signal — this is the single biggest trap in this API.
 
 The reliable oracle is the response body. Decode it as `PBEditOperationResponse` and compare
-`originalTimestamps` to `newTimestamps`; a real operation bumps them and reports
-`processedOperations`:
+`originalTimestamps` to `newTimestamps` — a real operation bumps them:
 
 ```js
 const r = any.protobuf.PBEditOperationResponse.decode(res.body);
 const changed = JSON.stringify(r.originalTimestamps) !== JSON.stringify(r.newTimestamps);
 // changed === false  =>  the server ignored your operation
 ```
+
+Use `changed` and nothing else. In particular **`processedOperations` is not a success
+signal** — the server echoes your operation ids back in it even for handlers it doesn't
+recognize, so a non-empty list there means only that it read your request.
 
 The helper's `postOps()` returns `{ status, changed, processed }`. This makes probing for
 unknown handlers tractable — try a candidate, read `changed`. It also beats diffing full
@@ -117,8 +121,15 @@ until you attach a grouping. The sequence:
    `updatedSettings.categoryGroupingId` = that grouping's identifier. The server then clones
    all its categories into this list's group.
 3. `set-should-hide-categories` (same endpoint) with `shouldHideCategories = false`.
-4. `set-list-item-category` on `data/shopping-lists/update` per item, with `updatedValue` set
-   to a **system category id** — it writes both `ListItem.category` and `categoryMatchId`.
+4. Per item, on `data/shopping-lists/update`, write **both** representations — they are not
+   equivalent and app-made items carry both:
+   - `set-list-item-category` with `updatedValue` = a **system category id** (sets
+     `ListItem.category` and `categoryMatchId`)
+   - `update-list-item-category-assignment` with `op.listItem` = a `ListItem` carrying
+     `categoryAssignments: [{ categoryGroupId, categoryId }]`, where `categoryId` is the
+     category's id **in this list's own group** (not the user-level category id)
+
+   This works on items that already exist — no need to delete and re-add them.
 
 Common system category ids:
 
@@ -140,16 +151,17 @@ health-and-personal-care   pet-supplies   baby   wine-beer-spirits   other
   section names that don't exist (e.g. "Trail Food", "Fuel and Cleanup"), you can't create
   them via the API. Map to the closest existing aisle, or tell them that specific naming has
   to be done in the app. Don't quietly substitute different names without saying so.
-- **`categoryAssignments` stays empty** with this approach, while items categorized in the app
-  carry it. Server-side `category`/`categoryMatchId` match what app-categorized items have, so
-  grouping is expected to render, but that hasn't been confirmed visually in the app. Say so
-  rather than promising the UI looks right.
 - **Never write to `data/user-categories/update`.** That data is global and shared by every
   list on the account; the recipe above never needs it.
 - **Preserve existing fields when writing `PBListSettings`.** The message carries unrelated
   settings, and sending it with unset scalars resets `listColorType`, `listThemeId`, and
   `listItemSortOrder` to defaults and can blank `listCategoryGroupId`. Read current settings
-  first and carry them through.
+  first and carry them through. The settings live in `listSettingsResponse.**settings**` —
+  there is no `newSettings` field, and reading that name returns empty for every list, which
+  looks exactly like "this list has no settings" and will send you down a wrong path.
+- Verification here is of AnyList's **server-side data**, not the rendered app. Items end up
+  structurally identical to ones categorized in the app, which is strong evidence, but if you
+  haven't opened the app, say that rather than promising the UI looks right.
 
 ## Working safely
 

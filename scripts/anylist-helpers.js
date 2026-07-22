@@ -59,7 +59,11 @@ async function disconnect(any) {
 
 /**
  * The success oracle. An ignored handler returns 200 with identical timestamps;
- * a real one bumps them and reports processedOperations.
+ * a real one bumps them.
+ *
+ * `processed` is informational ONLY — the server echoes operation ids back in
+ * processedOperations even for handlers it does not recognize, so a non-zero count
+ * proves nothing. Trust `changed`.
  */
 function readEditResponse(any, body) {
   try {
@@ -174,7 +178,9 @@ async function getListState(any, listId) {
   const list = d.shoppingListsResponse.newLists.find(l => l.identifier === listId);
   const r = (d.shoppingListsResponse.listResponses || []).find(x => x.listId === listId);
   const group = r && r.categoryGroupResponses[0] && r.categoryGroupResponses[0].categoryGroup;
-  const allSettings = (d.listSettingsResponse && d.listSettingsResponse.newSettings) || [];
+  // The field is `settings`. There is no `newSettings` — reading that returns empty for
+  // every list and makes working settings look absent.
+  const allSettings = (d.listSettingsResponse && d.listSettingsResponse.settings) || [];
   return { list, group, settings: allSettings.find(s => s.listId === listId) };
 }
 
@@ -220,33 +226,57 @@ async function attachCategoryGrouping(any, uid, listId, groupingName = 'Grocery'
 }
 
 /**
- * Assign items to system categories. `mapping` is { itemName: systemCategoryId },
- * e.g. { 'bananas': 'produce' }. Writes both ListItem.category and categoryMatchId.
- * Call attachCategoryGrouping() first or the categories won't exist on the list.
+ * Assign items to categories. `mapping` is { itemName: systemCategoryId },
+ * e.g. { 'bananas': 'produce' }. Call attachCategoryGrouping() first so the
+ * categories exist on the list.
+ *
+ * Writes BOTH representations, because they are not equivalent:
+ *   - `set-list-item-category` sets ListItem.category / categoryMatchId (the legacy pair)
+ *   - `update-list-item-category-assignment` sets categoryAssignments[], which is what
+ *     items categorized inside the AnyList app actually carry
+ * Setting only the first leaves items structurally unlike app-made ones.
  */
 async function setItemCategories(any, uid, listId, mapping) {
-  const { list } = await getListState(any, listId);
+  const { list, group } = await getListState(any, listId);
+  if (!group || (group.categories || []).length <= 1) {
+    throw new Error('List has no categories — call attachCategoryGrouping() first');
+  }
   const byName = new Map((list.items || []).map(i => [(i.name || '').trim().toLowerCase(), i]));
+  const bySys = new Map((group.categories || []).map(c => [c.systemCategory, c]));
 
   const ops = [];
   const missing = [];
+  const unknownCategory = [];
   for (const [name, sys] of Object.entries(mapping)) {
     const item = byName.get(name.trim().toLowerCase());
     if (!item) { missing.push(name); continue; }
-    const op = mkOp(any, uid, 'set-list-item-category');
-    op.setListId(listId);
-    op.setListItemId(item.identifier);
-    op.setUpdatedValue(sys);
-    ops.push(op);
+    const cat = bySys.get(sys);
+    if (!cat) { unknownCategory.push(sys); continue; }
+
+    const legacy = mkOp(any, uid, 'set-list-item-category');
+    legacy.setListId(listId);
+    legacy.setListItemId(item.identifier);
+    legacy.setUpdatedValue(sys);
+    ops.push(legacy);
+
+    const assign = mkOp(any, uid, 'update-list-item-category-assignment');
+    assign.setListId(listId);
+    assign.setListItemId(item.identifier);
+    assign.setListItem(new any.protobuf.ListItem({
+      identifier: item.identifier,
+      listId,
+      categoryAssignments: [{ identifier: uuid(), categoryGroupId: group.identifier, categoryId: cat.identifier }],
+    }));
+    ops.push(assign);
   }
-  if (ops.length === 0) return { assigned: 0, missing };
+  if (ops.length === 0) return { assigned: 0, missing, unknownCategory };
 
   const res = await postOps(any, ops);
   if (res.changed === false) throw new Error('setItemCategories silently failed — server ignored the operations');
 
   const after = await getListState(any, listId);
-  const assigned = (after.list.items || []).filter(i => i.category).length;
-  return { assigned, missing, ...res };
+  const assigned = (after.list.items || []).filter(i => i.category && (i.categoryAssignments || []).length > 0).length;
+  return { assigned, missing, unknownCategory, ...res };
 }
 
 module.exports = {

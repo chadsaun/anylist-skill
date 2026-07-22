@@ -77,6 +77,10 @@ probing tractable; without it, every wrong guess looks like a success. It's also
 less racy than diffing full account state, which shifts under you when anything else (the
 phone app, another script) touches the account.
 
+**`processedOperations` is not a success signal.** The server echoes submitted operation ids
+back in it even for handlers that don't exist — a bogus `handlerId` returns 200 with a body
+structurally identical to a real one's. Only the timestamp comparison discriminates.
+
 ## Confirmed handlers
 
 Verified by oracle + refetch:
@@ -87,6 +91,7 @@ Verified by oracle + refetch:
 | `remove-shopping-list` | shopping-lists | deletes a list | `listId`, `list` |
 | `add-shopping-list-item` | shopping-lists | adds an item | `listId`, `listItemId`, `listItem` |
 | `set-list-item-category` | shopping-lists | sets item category (writes both `category` and `categoryMatchId`) | `listId`, `listItemId`, `updatedValue` |
+| `update-list-item-category-assignment` | shopping-lists | sets `categoryAssignments` on an existing item | `listId`, `listItemId`, `listItem` (carrying the assignment) |
 | `set-category-grouping-id` | list-settings | attaches list to a user category grouping; server clones its categories into the list | `updatedSettings` |
 | `set-should-hide-categories` | list-settings | toggles category display | `updatedSettings` |
 
@@ -179,13 +184,20 @@ pet-supplies   baby   wine-beer-spirits   other
 - **`PBListSettings` carries unrelated settings.** Writing it with unset scalars resets
   `listColorType`, `listThemeId`, `listItemSortOrder` to defaults and can blank
   `listCategoryGroupId`. Read current settings and carry the fields through.
-- **`categoryAssignments` stays empty** with this approach, whereas app-categorized items carry
-  it. `category`/`categoryMatchId` match what app-categorized items hold, so grouping is
-  expected to render — but this has **not been visually confirmed in the AnyList app**. Don't
-  promise the UI looks right.
+- **Write both category representations.** `set-list-item-category` sets the legacy
+  `category`/`categoryMatchId` pair but does *not* create a `categoryAssignments` entry, which
+  is what app-categorized items carry. Use `update-list-item-category-assignment` as well; it
+  works on existing items (no delete/re-add needed). The `categoryId` in the assignment is the
+  category's id **in this list's cloned group**, not the user-level category id.
+- **Settings live in `listSettingsResponse.settings`.** There is no `newSettings` field —
+  reading that name yields 0 rows for every list on the account (actual: one row per list) and
+  makes correctly-configured lists look unconfigured.
 - **AnyList does not auto-categorize API-added items.** Items named "Bananas"/"Milk"/"Bread"
   come back with `categoryMatchId = null`. Auto-categorization is client-side.
 - **Never write to `data/user-categories/update`** — global, shared, and ignored anyway.
+- Verification is of the server-side data model, not the app's rendering. Items end up
+  structurally identical to app-categorized ones, which is strong evidence but not a pixel
+  check.
 
 ## Still unsolved
 
@@ -194,11 +206,15 @@ pet-supplies   baby   wine-beer-spirits   other
   `create-category-group`, and ~20 name variants) return 200 and persist nothing. So you can
   only reuse category names the account already has. Arbitrary section names (e.g. "Trail
   Food") aren't creatable via the API — do that in the app.
-- **Setting `categoryAssignments` directly.** No working handler found;
-  `update-list-item-category-assignment` on `data/categorized-items/update` is ignored.
-- The likely blocker for both is the `operationClass` / `operationVersion` discriminator in
+- The likely blocker is the `operationClass` / `operationVersion` discriminator in
   `PBOperationMetadata`, which the library never sets and whose values aren't recoverable from
   the minified bundle.
+
+Previously listed here and since **solved**: setting `categoryAssignments` on an existing item.
+The handler name (`update-list-item-category-assignment`) was right but the endpoint was wrong
+— it belongs on `data/shopping-lists/update` with the assignment carried on the operation's
+nested `listItem`, not on `data/categorized-items/update`. Worth remembering as a pattern: a
+handler that appears dead may just be pointed at the wrong endpoint.
 
 ## Discovering handler names
 
