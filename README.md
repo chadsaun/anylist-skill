@@ -13,26 +13,30 @@ operations that package doesn't cover.
 Two findings here cost real time to establish and are the reason this is worth publishing:
 
 **1. AnyList returns `HTTP 200` for operations it doesn't recognize, then silently discards
-them.** A success status proves the request was received, not that anything changed. Roughly 30
-plausible handler names were tried before this became obvious. Every write must be verified by
-re-fetching state and diffing — which also makes probing for unknown handlers tractable.
+them.** A success status proves the request was received, not that anything changed — roughly
+30 plausible handler names "succeeded" this way while doing nothing. The real signal is in the
+response body: decode `PBEditOperationResponse` and compare `originalTimestamps` to
+`newTimestamps`. That oracle is what makes probing for unknown handlers tractable.
 
-**2. Creating categories / grouping items via the API does not work.** Modern AnyList accounts
-use a *user-level* category system: categories are global to the account, not per-list, and
-drive every list that uses them. Reads work; every write attempt across the category endpoints
-is accepted and dropped. `references/protocol.md` documents exactly what was tried so nobody
-repeats it. Grouping has to be done in the AnyList app.
+**2. Aisle/category grouping works, but not where you'd look for it.** A list doesn't own its
+categories. The account owns *groupings* of categories (user-level, global); a list points at
+one via **list settings**, and the server then clones that grouping's categories into the list.
+The unlock is `set-category-grouping-id` on `data/list-settings/update` — not any of the
+category-shaped handlers on the shopping-lists endpoint, all of which are silently ignored.
 
 ## What works
 
-| Intent | handlerId |
-|---|---|
-| Create a list | `new-shopping-list` |
-| Delete a list | `remove-shopping-list` |
-| Add an item | `add-shopping-list-item` |
+| Intent | Endpoint | handlerId |
+|---|---|---|
+| Create a list | shopping-lists | `new-shopping-list` |
+| Delete a list | shopping-lists | `remove-shopping-list` |
+| Add an item | shopping-lists | `add-shopping-list-item` |
+| Set an item's category | shopping-lists | `set-list-item-category` |
+| Attach a category grouping | list-settings | `set-category-grouping-id` |
+| Show categories | list-settings | `set-should-hide-categories` |
 
-Operations are protobuf `PBListOperation` messages wrapped in a `PBListOperationList` and
-POSTed as a multipart field named `operations` to `data/shopping-lists/update`. They batch —
+Operations are protobuf messages wrapped in a list (`PBListOperationList` /
+`PBListSettingsOperationList`) and POSTed as a multipart field named `operations`. They batch —
 dozens of item-adds go in a single request.
 
 `scripts/anylist-helpers.js` wraps all of this (login, user id, batching, create/delete list,
@@ -44,10 +48,21 @@ const al = require('./anylist-helpers');
 const { any, uid } = await al.connect(__dirname);
 const list = await al.ensureList(any, uid, 'Camp Grocery');
 await al.addItems(any, uid, list, ['3 lb yellow onions', '2 lb carrots']);
+
+// group it by aisle
+await al.attachCategoryGrouping(any, uid, list.identifier, 'Grocery');
+await al.setItemCategories(any, uid, list.identifier, {
+  '3 lb yellow onions': 'produce',
+  '2 lb carrots': 'produce',
+});
 await al.disconnect(any);
 ```
 
 Adds are idempotent — re-running skips items already on the list instead of duplicating them.
+
+**Known limit:** you can only use categories the account already has. Creating *new*
+user-level categories is still unsolved (`data/user-categories/update` accepts and ignores
+everything), so arbitrary section names like "Trail Food" have to be made in the app.
 
 ## Install
 
