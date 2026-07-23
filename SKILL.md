@@ -1,6 +1,6 @@
 ---
 name: anylist
-description: Programmatically read, create, populate, and category-group lists in AnyList (groceries, camping, packing, to-do lists) via the reverse-engineered AnyList API. Use whenever the user wants to get items into or out of AnyList — "add this to my AnyList", "make a grocery list from this recipe/PDF", "create a packing list in AnyList", "what's on my AnyList", importing a list from a document, or syncing items to AnyList. Also use for anything involving AnyList categories or aisle-grouping, because this skill documents the exact undocumented operation sequence that works.
+description: Read, create, populate, delete, and category-group lists in AnyList (groceries, camping, packing, to-do lists) via the reverse-engineered AnyList API. Use whenever the user wants items into or out of AnyList — "add this to my AnyList", "make a grocery list from this recipe/PDF/spreadsheet", "create a packing list in AnyList", "what's on my AnyList", "delete that list from AnyList", importing a list from a document, scripting a recurring sync, or debugging duplicate items on a list. Also use for anything involving AnyList categories or aisle-grouping, since this skill documents the exact undocumented operation sequence that works. Scope is automating AnyList data — not troubleshooting the AnyList desktop or phone app itself.
 ---
 
 # AnyList automation
